@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "689730103440",
+    "project_id": "repertoire-prod-choir",
+    "storage_bucket": "repertoire-prod-choir.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:689730103440:android:33f803af75be0178079015",
+        "android_client_info": {
+          "package_name": "com.tuorg.repertoire"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyB58ujaYRW2GJt5KJtt47DywIBU5W0tH3M"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
