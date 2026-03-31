@@ -4,7 +4,14 @@ import 'package:hive_flutter/hive_flutter.dart';
 import '../../data/repositories/setlist_repository.dart';
 import '../../data/repositories/song_repository.dart';
 import '../live/live_view_screen.dart';
-import '../../core/utils/transpose.dart'; // ajusta la ruta si difiere
+
+import '../../data/repositories/setlist_cloud_repository.dart';
+import '../../core/utils/transpose.dart'; // para transposeChord
+
+import 'package:flutter/services.dart';
+import 'package:share_plus/share_plus.dart';
+
+import 'package:cloud_firestore/cloud_firestore.dart';
 
 /// -------- LISTA DE SETLISTS --------
 class SetlistScreen extends StatelessWidget {
@@ -74,6 +81,12 @@ class _SetlistEditorScreenState extends State<SetlistEditorScreen> {
   final setlistRepo = SetlistRepo();
   final songRepo = SongRepo();
 
+  final cloudRepo = SetlistCloudRepo();
+  String? get cloudSetlistId => setlist?['cloudId'] as String?;
+
+  Stream<Map<String, dynamic>?>? _setlistStream;
+  Stream<List<Map<String, dynamic>>>? _itemsStream;
+
   Map<String, dynamic>? setlist;
   final titleCtrl = TextEditingController();
   final notesCtrl = TextEditingController();
@@ -86,22 +99,215 @@ class _SetlistEditorScreenState extends State<SetlistEditorScreen> {
     _load();
   }
 
-  void _load() {
-    setlist = setlistRepo.getById(widget.setlistId) ?? {
-      'id': widget.setlistId,
-      'title': 'Setlist',
-      'notes': '',
-      'items': <Map<String, dynamic>>[],
-    };
+  void _load() async {
+    setlist = setlistRepo.getById(widget.setlistId);
+
+    if (setlist == null) {
+      setlist = {
+        'id': widget.setlistId,
+        'title': 'Setlist',
+        'notes': '',
+        'items': <Map<String, dynamic>>[],
+      };
+    }
+
+    if (setlist!['cloudId'] == null) {
+      final cloudId = await cloudRepo.createSetlist(
+        title: setlist!['title'] ?? 'Setlist',
+      );
+      setlist!['cloudId'] = cloudId;
+      await setlistRepo.upsert(setlist!);
+    }
+
     titleCtrl.text = setlist?['title'] ?? '';
     notesCtrl.text = setlist?['notes'] ?? '';
-    setState(() {});
+
+    final cid = cloudSetlistId;
+    if (cid != null) {
+      _setlistStream = cloudRepo.watchSetlist(cid).map((doc) => doc.data());
+      _itemsStream = cloudRepo.watchItems(cid).map((snapshot) {
+        return snapshot.docs.map((d) {
+          final data = d.data();
+          data['docId'] = d.id;
+          return data;
+        }).toList();
+      });
+    }
+
+    await _syncLocalItemsToCloudIfNeeded();
+
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _syncLocalItemsToCloudIfNeeded() async {
+    if (cloudSetlistId == null || setlist == null) return;
+
+    final localItems =
+        (setlist!['items'] as List?)?.cast<Map>().toList() ?? <Map>[];
+
+    // sincroniza metadata principal primero
+    await cloudRepo.updateSetlistMeta(
+      setlistId: cloudSetlistId!,
+      title: (setlist!['title'] ?? 'Setlist').toString(),
+      notes: (setlist!['notes'] ?? '').toString(),
+    );
+
+    if (localItems.isEmpty) return;
+
+    final snapshot = await cloudRepo.watchItems(cloudSetlistId!).first;
+    final cloudDocs = snapshot.docs.toList();
+
+    // Si no hay nada en cloud, subimos todo
+    if (cloudDocs.isEmpty) {
+      for (var i = 0; i < localItems.length; i++) {
+        final item = Map<String, dynamic>.from(localItems[i]);
+        final songId = item['songId']?.toString();
+        if (songId == null || songId.isEmpty) continue;
+
+        final song = songRepo.getById(songId);
+        final title = (item['title'] ?? song?['title'] ?? 'Sin título').toString();
+        final baseKey = (item['baseKey'] ?? song?['baseKey'] ?? 'C').toString();
+
+        await cloudRepo.addItem(
+          setlistId: cloudSetlistId!,
+          songId: songId,
+          title: title,
+          baseKey: baseKey,
+          position: i,
+          bodyChordPro: song?['bodyChordPro'] ?? item['bodyChordPro'] ?? '',
+        );
+      }
+
+      // aplicar semitonos después de crear
+      final afterAdd = await cloudRepo.watchItems(cloudSetlistId!).first;
+      final docs = afterAdd.docs.toList()
+        ..sort((a, b) =>
+            ((a.data()['position'] ?? 0) as int).compareTo((b.data()['position'] ?? 0) as int));
+
+      for (var i = 0; i < localItems.length && i < docs.length; i++) {
+        final item = Map<String, dynamic>.from(localItems[i]);
+        final steps = (item['steps'] ?? 0) as int;
+
+        if (steps != 0) {
+          await cloudRepo.updateSteps(
+            setlistId: cloudSetlistId!,
+            itemId: docs[i].id,
+            steps: steps,
+          );
+        }
+      }
+
+      return;
+    }
+
+    // Si ya existen items en cloud, solo completa faltantes por songId
+    final cloudBySongId = <String, Map<String, dynamic>>{};
+    for (final d in cloudDocs) {
+      final data = d.data();
+      final sid = data['songId']?.toString();
+      if (sid != null && sid.isNotEmpty) {
+        cloudBySongId[sid] = {
+          'docId': d.id,
+          ...data,
+        };
+      }
+    }
+
+    for (var i = 0; i < localItems.length; i++) {
+      final item = Map<String, dynamic>.from(localItems[i]);
+      final songId = item['songId']?.toString();
+      if (songId == null || songId.isEmpty) continue;
+
+      final song = songRepo.getById(songId);
+      final title = (item['title'] ?? song?['title'] ?? 'Sin título').toString();
+      final baseKey = (item['baseKey'] ?? song?['baseKey'] ?? 'C').toString();
+      final steps = (item['steps'] ?? 0) as int;
+
+      if (!cloudBySongId.containsKey(songId)) {
+        await cloudRepo.addItem(
+          setlistId: cloudSetlistId!,
+          songId: songId,
+          title: title,
+          baseKey: baseKey,
+          position: i,
+          bodyChordPro: song?['bodyChordPro'] ?? item['bodyChordPro'] ?? '',
+        );
+      }
+    }
+
+    // refresca y alinea positions/steps/baseKey/title
+    final refreshed = await cloudRepo.watchItems(cloudSetlistId!).first;
+    final refreshedDocs = refreshed.docs.toList();
+
+    final refreshedBySongId = <String, QueryDocumentSnapshot<Map<String, dynamic>>>{};
+    for (final d in refreshedDocs) {
+      final sid = d.data()['songId']?.toString();
+      if (sid != null && sid.isNotEmpty) {
+        refreshedBySongId[sid] = d;
+      }
+    }
+
+    final orderedIds = <String>[];
+
+    for (var i = 0; i < localItems.length; i++) {
+      final item = Map<String, dynamic>.from(localItems[i]);
+      final songId = item['songId']?.toString();
+      if (songId == null || songId.isEmpty) continue;
+
+      final doc = refreshedBySongId[songId];
+      if (doc == null) continue;
+
+      final data = doc.data();
+      final localTitle = (item['title'] ?? data['title'] ?? 'Sin título').toString();
+      final localBaseKey = (item['baseKey'] ?? data['baseKey'] ?? 'C').toString();
+      final localSteps = (item['steps'] ?? 0) as int;
+
+      // actualiza steps si cambió
+      if ((data['steps'] ?? 0) != localSteps) {
+        await cloudRepo.updateSteps(
+          setlistId: cloudSetlistId!,
+          itemId: doc.id,
+          steps: localSteps,
+        );
+      }
+
+      // actualiza campos extra si cambiaron
+      final needsMetaUpdate =
+          (data['title'] ?? '') != localTitle || (data['baseKey'] ?? '') != localBaseKey;
+
+      if (needsMetaUpdate) {
+        await cloudRepo.updateItemMeta(
+          setlistId: cloudSetlistId!,
+          itemId: doc.id,
+          title: localTitle,
+          baseKey: localBaseKey,
+        );
+      }
+
+      orderedIds.add(doc.id);
+    }
+
+    if (orderedIds.isNotEmpty) {
+      await cloudRepo.reorder(
+        setlistId: cloudSetlistId!,
+        itemIdsInOrder: orderedIds,
+      );
+    }
   }
 
   Future<void> _save() async {
     setlist!['title'] = titleCtrl.text.trim();
     setlist!['notes'] = notesCtrl.text.trim();
     await setlistRepo.upsert(setlist!);
+
+    if (cloudSetlistId != null) {
+      await cloudRepo.updateSetlistMeta(
+        setlistId: cloudSetlistId!,
+        title: setlist!['title'],
+        notes: setlist!['notes'],
+      );
+    }
+
     if (mounted) {
       _dirty = false;
       ScaffoldMessenger.of(context)
@@ -147,30 +353,66 @@ class _SetlistEditorScreenState extends State<SetlistEditorScreen> {
       context: context,
       builder: (ctx) => _SongPickerDialog(songRepo: songRepo),
     );
+
+    Future<void> _addSongToCloud(_SongPickResult chosen) async {
+      final snapshot = await cloudRepo.watchItems(cloudSetlistId!).first;
+      final position = snapshot.docs.length;
+
+      final song = songRepo.getById(chosen.id);
+
+      await cloudRepo.addItem(
+        setlistId: cloudSetlistId!,
+        songId: chosen.id,
+        title: chosen.title,
+        baseKey: song?['baseKey'] ?? 'C',
+        position: position,
+        bodyChordPro: song?['bodyChordPro'] ?? '',
+      );
+    }
+
     if (chosen == null) return;
+
+    await _addSongToCloud(chosen);
+
     _markDirty(() {
+      final song = songRepo.getById(chosen.id);
       final list = (setlist!['items'] as List).cast<Map>().toList();
       list.add({
         'songId': chosen.id,
         'title': chosen.title,
-        'steps': 0,
         'order': list.length,
+        'steps': 0,
+        'baseKey': song?['baseKey'] ?? 'C',
       });
       setlist!['items'] = list;
     });
   }
 
-  void _changeSteps(int index, int delta) {
+  void _changeSteps(int index, int delta) async {
+    final list = (setlist!['items'] as List).cast<Map>().toList();
+    final m = Map<String, dynamic>.from(list[index]);
+
+    final newSteps = ((m['steps'] ?? 0) as int) + delta;
+
     _markDirty(() {
-      final list = (setlist!['items'] as List).cast<Map>().toList();
-      final m = Map<String, dynamic>.from(list[index]);
-      m['steps'] = (m['steps'] as int) + delta;
+      m['steps'] = newSteps;
       list[index] = m;
       setlist!['items'] = list;
     });
+
+    final snapshot = await cloudRepo.watchItems(cloudSetlistId!).first;
+    final docs = snapshot.docs.toList();
+
+    if (index < docs.length) {
+      await cloudRepo.updateSteps(
+        setlistId: cloudSetlistId!,
+        itemId: docs[index].id,
+        steps: newSteps,
+      );
+    }
   }
 
-  void _removeItem(int index) {
+  void _removeItem(int index) async {
     _markDirty(() {
       final list = (setlist!['items'] as List).cast<Map>().toList();
       list.removeAt(index);
@@ -179,138 +421,251 @@ class _SetlistEditorScreenState extends State<SetlistEditorScreen> {
       }
       setlist!['items'] = list;
     });
+
+    final snapshot = await cloudRepo.watchItems(cloudSetlistId!).first;
+    final docs = snapshot.docs.toList();
+
+    if (index < docs.length) {
+      await cloudRepo.removeItem(
+        setlistId: cloudSetlistId!,
+        itemId: docs[index].id,
+      );
+    }
   }
+
+  Future<void> _copiarCodigoSetlist() async {
+    await Clipboard.setData(ClipboardData(text: cloudSetlistId!));
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Código del setlist copiado')),
+    );
+  }
+
+  Future<void> _compartirCodigoSetlist() async {
+    await Share.share(
+      'Únete a mi setlist en Repertoire.\nCódigo: $cloudSetlistId',
+      subject: 'Código de setlist',
+    );
+  }
+
+
 
   @override
   Widget build(BuildContext context) {
-    if (setlist == null) {
-      return const Scaffold(body: Center(child: CircularProgressIndicator()));
+    if (_setlistStream == null || _itemsStream == null) {
+      return const Scaffold(
+        body: Center(child: CircularProgressIndicator()),
+      );
     }
-    final items = (setlist!['items'] as List).cast<Map>().toList()
-      ..sort((a, b) => (a['order'] as int).compareTo(b['order'] as int));
+    return StreamBuilder<Map<String, dynamic>?>(
+      stream: _setlistStream!,
+      builder: (context, setlistSnap) {
+        if (!setlistSnap.hasData) {
+          return const Scaffold(
+            body: Center(child: CircularProgressIndicator()),
+          );
+        }
 
-    return WillPopScope(
-      onWillPop: _confirmLeaveIfDirty,
-      child: Scaffold(
-        appBar: AppBar(
-          title: const Text('Editar Setlist'),
-          actions: [
-            IconButton(
-              onPressed: _save,
-              icon: const Icon(Icons.save),
-              tooltip: 'Guardar',
-            ),
-            IconButton(
-              tooltip: 'Vista en vivo',
-              icon: const Icon(Icons.slideshow_outlined),
-              onPressed: () async {
-                // si estás usando el modo "guardar manual", guarda antes de presentar
-                if (mounted && _dirty) {
-                  await _save();
-                }
-                if (!mounted) return;
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (_) => LiveViewScreen(setlistId: widget.setlistId),
-                  ),
-                );
-              },
-            ),
-          ],
-        ),
-        floatingActionButton: FloatingActionButton(
-          onPressed: _addSong,
-          child: const Icon(Icons.add),
-        ),
-        body: Padding(
-          padding: const EdgeInsets.all(12),
-          child: Column(
-            children: [
-              TextField(
-                controller: titleCtrl,
-                decoration: InputDecoration(
-                  labelText: 'Título del setlist',
-                  border: const OutlineInputBorder(),
-                  suffixIcon: _dirty ? const Icon(Icons.circle, size: 10, color: Colors.amber)
-                                     : const SizedBox.shrink(),
-                ),
-                onChanged: (_) => _markDirty(),
-              ),
-              const SizedBox(height: 8),
-              TextField(
-                controller: notesCtrl,
-                maxLines: 2,
-                decoration: const InputDecoration(
-                  labelText: 'Notas (quién inicia, BPM, etc.)',
-                  border: OutlineInputBorder(),
-                ),
-                onChanged: (_) => _markDirty(),
-              ),
-              const SizedBox(height: 8),
-              Expanded(
-                child: ReorderableListView.builder(
-                  buildDefaultDragHandles: false,
-                  itemCount: items.length,
-                  onReorder: (oldIndex, newIndex) {
-                    _markDirty(() {
-                      if (newIndex > oldIndex) newIndex--;
-                      final list = items;
-                      final item = list.removeAt(oldIndex);
-                      list.insert(newIndex, item);
-                      for (var i = 0; i < list.length; i++) {
-                        list[i]['order'] = i;
-                      }
-                      setlist!['items'] = list;
-                    });
-                  },
-                  itemBuilder: (context, i) {
-                    final it = items[i];
-                    final title = (it['title'] ?? '(sin título)') as String;
-                    final steps = (it['steps'] ?? 0) as int;
-                    final baseKey = it['baseKey'] ?? 'C';
-                    final newKey  = transposeChord(baseKey, steps); // ← del util
+        final cloudSetlist = setlistSnap.data!;
+        final titulo = cloudSetlist['title'] ?? 'Setlist';
+        final notas = cloudSetlist['notes'] ?? '';
 
-                    return Card(
-                      key: ValueKey(it['songId']),
-                      child: ListTile(
-                        leading: ReorderableDragStartListener(
-                          index: i,
-                          child: const Icon(Icons.drag_handle),
-                        ),
-                        title: Text(title),
-                        subtitle: Text(
-                          'Tono: $baseKey → $newKey  (${steps >= 0 ? '+' : ''}$steps semitonos)'
-                        ),
-                        trailing: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            IconButton(
-                              tooltip: 'Bajar ½',
-                              icon: const Icon(Icons.remove),
-                              onPressed: () => _changeSteps(i, -1),
+        if (titleCtrl.text != titulo) {
+          titleCtrl.text = titulo;
+        }
+        if (notesCtrl.text != notas) {
+          notesCtrl.text = notas;
+        }
+
+        return StreamBuilder<List<Map<String, dynamic>>>(
+          stream: _itemsStream!,
+          builder: (context, itemsSnap) {
+            if (!itemsSnap.hasData) {
+              return const Scaffold(
+                body: Center(child: CircularProgressIndicator()),
+              );
+            }
+
+            final cloudItems = itemsSnap.data!;
+
+            return WillPopScope(
+              onWillPop: _confirmLeaveIfDirty,
+              child: Scaffold(
+                appBar: AppBar(
+                  title: const Text('Editar Setlist'),
+                  actions: [
+                    IconButton(
+                      onPressed: _save,
+                      icon: const Icon(Icons.save),
+                      tooltip: 'Guardar',
+                    ),
+                    IconButton(
+                      onPressed: _copiarCodigoSetlist,
+                      icon: const Icon(Icons.copy_outlined),
+                      tooltip: 'Copiar código',
+                    ),
+                    IconButton(
+                      onPressed: _compartirCodigoSetlist,
+                      icon: const Icon(Icons.share_outlined),
+                      tooltip: 'Compartir código',
+                    ),
+                    IconButton(
+                      tooltip: 'Vista en vivo',
+                      icon: const Icon(Icons.slideshow_outlined),
+                      onPressed: () async {
+                        await _save();
+                        if (!mounted) return;
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) => LiveViewScreen(setlistId: widget.setlistId),
+                          ),
+                        );
+                      },
+                    ),
+                  ],
+                ),
+                floatingActionButton: FloatingActionButton(
+                  onPressed: _addSong,
+                  child: const Icon(Icons.add),
+                ),
+                body: Column(
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.all(12),
+                      child: Column(
+                        children: [
+                          TextField(
+                            controller: titleCtrl,
+                            decoration: const InputDecoration(
+                              labelText: 'Título del setlist',
+                              border: OutlineInputBorder(),
                             ),
-                            IconButton(
-                              tooltip: 'Subir ½',
-                              icon: const Icon(Icons.add),
-                              onPressed: () => _changeSteps(i, 1),
+                            onChanged: (v) async {
+                              await cloudRepo.updateSetlistMeta(
+                                setlistId: cloudSetlistId!,
+                                title: v,
+                                notes: notesCtrl.text,
+                              );
+                            },
+                          ),
+
+                          const SizedBox(height: 8),
+                          Align(
+                            alignment: Alignment.centerLeft,
+                            child: SelectableText(
+                              'Código del setlist: $cloudSetlistId',
+                              style: const TextStyle(fontSize: 12),
                             ),
-                            IconButton(
-                              tooltip: 'Eliminar',
-                              icon: const Icon(Icons.delete_outline),
-                              onPressed: () => _removeItem(i),
+                          ),
+
+                          const SizedBox(height: 12),
+                          TextField(
+                            controller: notesCtrl,
+                            decoration: const InputDecoration(
+                              labelText: 'Notas (guión inicial, BPM, etc.)',
+                              border: OutlineInputBorder(),
                             ),
-                          ],
-                        ),
+                            onChanged: (v) async {
+                              await cloudRepo.updateSetlistMeta(
+                                setlistId: cloudSetlistId!,
+                                title: titleCtrl.text,
+                                notes: v,
+                              );
+                            },
+                          ),
+                        ],
                       ),
-                    );
-                  },
+                    ),
+                    Expanded(
+                      child: cloudItems.isEmpty
+                          ? const Center(
+                        child: Text('No hay canciones en este setlist'),
+                      )
+                          : ReorderableListView.builder(
+                        itemCount: cloudItems.length,
+                        onReorder: (oldIndex, newIndex) async {
+                          if (newIndex > oldIndex) newIndex--;
+
+                          final ids = cloudItems
+                              .map((e) => e['docId'] as String)
+                              .toList();
+
+                          final movedId = ids.removeAt(oldIndex);
+                          ids.insert(newIndex, movedId);
+
+                          await cloudRepo.reorder(
+                            setlistId: cloudSetlistId!,
+                            itemIdsInOrder: ids,
+                          );
+                        },
+                        itemBuilder: (context, index) {
+                          final item = cloudItems[index];
+                          final baseKey = item['baseKey'] ?? 'C';
+                          final steps = item['steps'] ?? 0;
+                          final newKey = transposeChord(baseKey, steps);
+
+                          return Card(
+                            key: ValueKey(item['docId']),
+                            margin: const EdgeInsets.symmetric(
+                              horizontal: 12,
+                              vertical: 6,
+                            ),
+                            child: ListTile(
+                              leading: ReorderableDragStartListener(
+                                index: index,
+                                child: const Icon(Icons.drag_handle),
+                              ),
+                              title: Text(item['title'] ?? 'Sin título'),
+                              subtitle: Text(
+                                'Tono: $baseKey → $newKey  (${steps >= 0 ? '+' : ''}$steps semitonos)',
+                              ),
+                              trailing: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  IconButton(
+                                    icon: const Icon(Icons.remove),
+                                    onPressed: () async {
+                                      await cloudRepo.updateSteps(
+                                        setlistId: cloudSetlistId!,
+                                        itemId: item['docId'],
+                                        steps: steps - 1,
+                                      );
+                                    },
+                                  ),
+                                  IconButton(
+                                    icon: const Icon(Icons.add),
+                                    onPressed: () async {
+                                      await cloudRepo.updateSteps(
+                                        setlistId: cloudSetlistId!,
+                                        itemId: item['docId'],
+                                        steps: steps + 1,
+                                      );
+                                    },
+                                  ),
+                                  IconButton(
+                                    icon: const Icon(Icons.delete_outline),
+                                    onPressed: () async {
+                                      await cloudRepo.removeItem(
+                                        setlistId: cloudSetlistId!,
+                                        itemId: item['docId'],
+                                      );
+                                    },
+                                  ),
+                                ],
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+                  ],
                 ),
               ),
-            ],
-          ),
-        ),
-      ),
+            );
+          },
+        );
+      },
     );
   }
 }

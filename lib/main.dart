@@ -6,6 +6,9 @@ import 'features/share/share_import_screen.dart';
 import 'features/setlist/setlist_screen.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'firebase_options.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'features/setlist/join_setlist_screen.dart';
+
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -15,6 +18,8 @@ Future<void> main() async {
     options: DefaultFirebaseOptions.currentPlatform,
   );
 
+  await _ensureAuth();
+
   await Hive.initFlutter();
   await Hive.openBox('songs');
   await Hive.openBox('songs_trash');
@@ -22,6 +27,13 @@ Future<void> main() async {
   await Hive.openBox('setlists');
 
   runApp(const TuCoroApp());
+}
+
+Future<void> _ensureAuth() async {
+  final auth = FirebaseAuth.instance;
+  if (auth.currentUser == null) {
+    await auth.signInAnonymously();
+  }
 }
 
 class TuCoroApp extends StatelessWidget {
@@ -79,6 +91,20 @@ class HomeScreen extends StatelessWidget {
               Navigator.push(
                 context,
                 MaterialPageRoute(builder: (context) => const SetlistScreen()),
+              );
+            },
+          ),
+          const SizedBox(height: 12),
+          ListTile(
+            leading: const Icon(Icons.login),
+            title: const Text('Unirme a setlist'),
+            subtitle: const Text('Ingresar código'),
+            onTap: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => const JoinSetlistScreen(),
+                ),
               );
             },
           ),
