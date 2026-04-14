@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import '../../data/repositories/song_repository.dart';
+import '../../core/backup/backup_service.dart';
 
 class ShareImportScreen extends StatelessWidget {
   const ShareImportScreen({super.key});
@@ -33,10 +34,74 @@ class ShareImportScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text('Importar / Compartir')),
-      body: Center(
-        child: FilledButton(
-          onPressed: () => _importFromFile(context),
-          child: const Text('Importar canción desde archivo JSON'),
+      body: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            FilledButton(
+              onPressed: () => _importFromFile(context),
+              child: const Text('Importar canción desde archivo JSON'),
+            ),
+            const SizedBox(height: 12),
+            FilledButton.tonal(
+              onPressed: () async {
+                try {
+                  await BackupService.shareBackupJson();
+                  if (!context.mounted) return;
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Backup exportado')),
+                  );
+                } catch (e) {
+                  if (!context.mounted) return;
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text('Error al exportar backup: $e')),
+                  );
+                }
+              },
+              child: const Text('Exportar backup completo'),
+            ),
+            const SizedBox(height: 12),
+            FilledButton.tonal(
+              onPressed: () async {
+                final ok = await showDialog<bool>(
+                  context: context,
+                  builder: (_) => AlertDialog(
+                    title: const Text('Restaurar backup'),
+                    content: const Text(
+                      'Esto puede sobrescribir datos existentes con los del archivo seleccionado. ¿Deseas continuar?',
+                    ),
+                    actions: [
+                      TextButton(
+                        onPressed: () => Navigator.pop(context, false),
+                        child: const Text('Cancelar'),
+                      ),
+                      FilledButton(
+                        onPressed: () => Navigator.pop(context, true),
+                        child: const Text('Continuar'),
+                      ),
+                    ],
+                  ),
+                );
+
+                if (ok != true) return;
+
+                try {
+                  await BackupService.restoreFromJsonFile();
+                  if (!context.mounted) return;
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Backup restaurado')),
+                  );
+                } catch (e) {
+                  if (!context.mounted) return;
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text('Error al restaurar backup: $e')),
+                  );
+                }
+              },
+              child: const Text('Restaurar backup completo'),
+            ),
+          ],
         ),
       ),
     );

@@ -41,6 +41,7 @@ class SetlistCloudRepo {
     required String baseKey,
     required int position,
     required String bodyChordPro,
+    required String mode,
   }) async {
     await _db
         .collection('setlists')
@@ -53,6 +54,7 @@ class SetlistCloudRepo {
       'position': position,
       'steps': 0,
       'bodyChordPro': bodyChordPro,
+      'mode': mode,
     });
 
     await _touch(setlistId);

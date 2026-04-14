@@ -48,15 +48,18 @@ dependencies:
   firebase_core: ^4.0.0
   firebase_auth: ^6.0.1
   cloud_firestore: ^6.0.0
+  camera: ^0.10.5+5
+  google_mlkit_face_detection: ^0.11.0
+  pdfx: any
 
 dev_dependencies:
+  flutter_test:
+    sdk: flutter
   rename: ^3.0.2
   flutter_launcher_icons: ^0.13.1
-
-
-
+  flutter_lints: ^5.0.0
 flutter_app_name:
-  name: "Repertoire"   # <-- el nombre que quieras mostrar
+  name: "Repertoire"
 
 
   flutter_test:
@@ -67,7 +70,6 @@ flutter_app_name:
   # activated in the `analysis_options.yaml` file located at the root of your
   # package. See that file for information about deactivating specific lint
   # rules and activating additional ones.
-  flutter_lints: ^5.0.0
 
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec

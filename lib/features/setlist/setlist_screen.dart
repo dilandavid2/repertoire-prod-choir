@@ -134,7 +134,11 @@ class _SetlistEditorScreenState extends State<SetlistEditorScreen> {
       });
     }
 
-    await _syncLocalItemsToCloudIfNeeded();
+    if ((setlist!['cloudSyncedOnce'] ?? false) != true) {
+      await _syncLocalItemsToCloudIfNeeded();
+      setlist!['cloudSyncedOnce'] = true;
+      await setlistRepo.upsert(setlist!);
+    }
 
     if (mounted) setState(() {});
   }
@@ -175,6 +179,7 @@ class _SetlistEditorScreenState extends State<SetlistEditorScreen> {
           baseKey: baseKey,
           position: i,
           bodyChordPro: song?['bodyChordPro'] ?? item['bodyChordPro'] ?? '',
+          mode: (song?['mode'] ?? 'chordpro').toString(),
         );
       }
 
@@ -231,6 +236,7 @@ class _SetlistEditorScreenState extends State<SetlistEditorScreen> {
           baseKey: baseKey,
           position: i,
           bodyChordPro: song?['bodyChordPro'] ?? item['bodyChordPro'] ?? '',
+          mode: (song?['mode'] ?? 'chordpro').toString(),
         );
       }
     }
@@ -367,6 +373,7 @@ class _SetlistEditorScreenState extends State<SetlistEditorScreen> {
         baseKey: song?['baseKey'] ?? 'C',
         position: position,
         bodyChordPro: song?['bodyChordPro'] ?? '',
+        mode: (song?['mode'] ?? 'chordpro').toString(),
       );
     }
 
@@ -587,23 +594,62 @@ class _SetlistEditorScreenState extends State<SetlistEditorScreen> {
                         onReorder: (oldIndex, newIndex) async {
                           if (newIndex > oldIndex) newIndex--;
 
-                          final ids = cloudItems
+                          final reordered = List<Map<String, dynamic>>.from(cloudItems);
+                          final moved = reordered.removeAt(oldIndex);
+                          reordered.insert(newIndex, moved);
+
+                          final ids = reordered
                               .map((e) => e['docId'] as String)
                               .toList();
-
-                          final movedId = ids.removeAt(oldIndex);
-                          ids.insert(newIndex, movedId);
 
                           await cloudRepo.reorder(
                             setlistId: cloudSetlistId!,
                             itemIdsInOrder: ids,
                           );
+
+                          _markDirty(() {
+                            final localItems = reordered.map((e) {
+                              return {
+                                'songId': e['songId'],
+                                'title': e['title'],
+                                'order': e['position'] ?? 0,
+                                'steps': e['steps'] ?? 0,
+                                'baseKey': e['baseKey'] ?? 'C',
+                              };
+                            }).toList();
+
+                            for (var i = 0; i < localItems.length; i++) {
+                              localItems[i]['order'] = i;
+                            }
+
+                            setlist!['items'] = localItems;
+                          });
+
+                          await setlistRepo.upsert(setlist!);
                         },
                         itemBuilder: (context, index) {
                           final item = cloudItems[index];
                           final baseKey = item['baseKey'] ?? 'C';
                           final steps = item['steps'] ?? 0;
-                          final newKey = transposeChord(baseKey, steps);
+                          final mode = (item['mode'] ?? 'chordpro').toString();
+
+                          final canTranspose = mode == 'chordpro' || mode == 'score';
+                          final newKey = canTranspose ? transposeChord(baseKey, steps) : baseKey;
+
+                          String tipoLabel;
+                          switch (mode) {
+                            case 'score':
+                              tipoLabel = 'Partitura editable';
+                              break;
+                            case 'score_image':
+                              tipoLabel = 'Partitura por imagen';
+                              break;
+                            case 'score_pdf':
+                              tipoLabel = 'Partitura por PDF';
+                              break;
+                            default:
+                              tipoLabel = 'Letra/Acordes';
+                          }
 
                           return Card(
                             key: ValueKey(item['docId']),
@@ -618,31 +664,35 @@ class _SetlistEditorScreenState extends State<SetlistEditorScreen> {
                               ),
                               title: Text(item['title'] ?? 'Sin título'),
                               subtitle: Text(
-                                'Tono: $baseKey → $newKey  (${steps >= 0 ? '+' : ''}$steps semitonos)',
+                                canTranspose
+                                    ? 'Tono: $baseKey → $newKey  (${steps >= 0 ? '+' : ''}$steps semitonos)'
+                                    : 'Tipo: $tipoLabel',
                               ),
                               trailing: Row(
                                 mainAxisSize: MainAxisSize.min,
                                 children: [
-                                  IconButton(
-                                    icon: const Icon(Icons.remove),
-                                    onPressed: () async {
-                                      await cloudRepo.updateSteps(
-                                        setlistId: cloudSetlistId!,
-                                        itemId: item['docId'],
-                                        steps: steps - 1,
-                                      );
-                                    },
-                                  ),
-                                  IconButton(
-                                    icon: const Icon(Icons.add),
-                                    onPressed: () async {
-                                      await cloudRepo.updateSteps(
-                                        setlistId: cloudSetlistId!,
-                                        itemId: item['docId'],
-                                        steps: steps + 1,
-                                      );
-                                    },
-                                  ),
+                                  if (canTranspose) ...[
+                                    IconButton(
+                                      icon: const Icon(Icons.remove),
+                                      onPressed: () async {
+                                        await cloudRepo.updateSteps(
+                                          setlistId: cloudSetlistId!,
+                                          itemId: item['docId'],
+                                          steps: steps - 1,
+                                        );
+                                      },
+                                    ),
+                                    IconButton(
+                                      icon: const Icon(Icons.add),
+                                      onPressed: () async {
+                                        await cloudRepo.updateSteps(
+                                          setlistId: cloudSetlistId!,
+                                          itemId: item['docId'],
+                                          steps: steps + 1,
+                                        );
+                                      },
+                                    ),
+                                  ],
                                   IconButton(
                                     icon: const Icon(Icons.delete_outline),
                                     onPressed: () async {

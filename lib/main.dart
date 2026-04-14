@@ -9,6 +9,7 @@ import 'firebase_options.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'features/setlist/join_setlist_screen.dart';
 
+import 'features/score/score_editor_screen.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -80,6 +81,17 @@ class HomeScreen extends StatelessWidget {
               Navigator.push(
                 context,
                 MaterialPageRoute(builder: (context) => const EditorScreen()),
+              );
+            },
+          ),
+          const SizedBox(height: 12),
+          _Tile(
+            title: 'Editor de partituras',
+            subtitle: 'Crear/editar partitura escrita',
+            onTap: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (context) => const ScoreEditorScreen()),
               );
             },
           ),

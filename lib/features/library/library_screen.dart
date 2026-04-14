@@ -4,6 +4,13 @@ import 'package:hive_flutter/hive_flutter.dart';
 import '../editor/editor_screen.dart';
 import 'category_manager_screen.dart';
 import 'trash_screen.dart';
+import '../../data/repositories/song_repository.dart';
+
+import '../score/score_editor_screen.dart';
+
+import '../score/import_score_file_screen.dart';
+
+import '../score/imported_score_detail_screen.dart';
 
 class LibraryScreen extends StatefulWidget {
   const LibraryScreen({super.key});
@@ -18,6 +25,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
   // 🔎 búsqueda
   final TextEditingController _searchCtrl = TextEditingController();
   final FocusNode _searchFocus = FocusNode();
+  final SongRepo repo = SongRepo();
   String _query = '';
   bool _showSearch = false;
 
@@ -41,6 +49,83 @@ class _LibraryScreenState extends State<LibraryScreen> {
   void _clearSearch() {
     _searchCtrl.clear();
     setState(() => _query = '');
+  }
+
+  Future<void> _showCreateMenu() async {
+    await showModalBottomSheet(
+      context: context,
+      showDragHandle: true,
+      builder: (context) {
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(12, 8, 12, 16),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                ListTile(
+                  leading: const Icon(Icons.edit_note),
+                  title: const Text('Nueva canción'),
+                  subtitle: const Text('Letra y acordes'),
+                  onTap: () {
+                    Navigator.pop(context);
+                    Navigator.push(
+                      this.context,
+                      MaterialPageRoute(builder: (_) => const EditorScreen()),
+                    );
+                  },
+                ),
+                ListTile(
+                  leading: const Icon(Icons.music_note),
+                  title: const Text('Nueva partitura editable'),
+                  subtitle: const Text('Editor interno de partituras'),
+                  onTap: () {
+                    Navigator.pop(context);
+                    Navigator.push(
+                      this.context,
+                      MaterialPageRoute(
+                        builder: (_) => const ScoreEditorScreen(),
+                      ),
+                    );
+                  },
+                ),
+                ListTile(
+                  leading: const Icon(Icons.image_outlined),
+                  title: const Text('Importar partitura por imagen'),
+                  subtitle: const Text('Una o varias páginas'),
+                  onTap: () async {
+                    Navigator.pop(context);
+                    await Navigator.push(
+                      this.context,
+                      MaterialPageRoute(
+                        builder: (_) => const ImportScoreFileScreen(
+                          initialType: 'image',
+                        ),
+                      ),
+                    );
+                  },
+                ),
+                ListTile(
+                  leading: const Icon(Icons.picture_as_pdf_outlined),
+                  title: const Text('Importar partitura por PDF'),
+                  subtitle: const Text('PDF convertido en páginas'),
+                  onTap: () async {
+                    Navigator.pop(context);
+                    await Navigator.push(
+                      this.context,
+                      MaterialPageRoute(
+                        builder: (_) => const ImportScoreFileScreen(
+                          initialType: 'pdf',
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
   }
 
   @override
@@ -69,10 +154,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
         ],
       ),
       floatingActionButton: FloatingActionButton(
-        onPressed: () => Navigator.push(
-          context,
-          MaterialPageRoute(builder: (_) => const EditorScreen()),
-        ),
+        onPressed: _showCreateMenu,
         child: const Icon(Icons.add),
       ),
       body: Column(
@@ -183,19 +265,61 @@ class _LibraryScreenState extends State<LibraryScreen> {
                             .toList() ??
                         const <String>[];
 
+                    final mode = (s['mode'] ?? 'chordpro').toString();
+                    String tipo;
+                    switch (mode) {
+                      case 'score':
+                        tipo = 'Partitura editable';
+                        break;
+                      case 'score_image':
+                        tipo = 'Partitura por imagen';
+                        break;
+                      case 'score_pdf':
+                        tipo = 'Partitura por PDF';
+                        break;
+                      default:
+                        tipo = 'Letra/Acordes';
+                    }
+
                     return ListTile(
                       title: Text(title),
                       // 👉 Sin IDs raros: Tono + categorías (si hay)
                       subtitle: Text(
                         'Tono: $baseKey'
-                        '${catNames.isNotEmpty ? '  ·  ${catNames.join(', ')}' : ''}',
+                            '${catNames.isNotEmpty ? '  ·  ${catNames.join(', ')}' : ''}'
+                            '  ·  Tipo: $tipo',
                       ),
                       onTap: () => Navigator.push(
                         context,
                         MaterialPageRoute(
-                          builder: (_) => EditorScreen(
-                            songId: s['id'] as String?,
-                          ),
+                          builder: (_) {
+                            final mode = (s['mode'] ?? 'chordpro').toString();
+                            final title = s['title'] as String? ?? '(sin título)';
+
+                            if (mode == 'score') {
+                              return ScoreEditorScreen(
+                                songId: s['id'] as String?,
+                              );
+                            }
+
+                            if (mode == 'score_image') {
+                              return ImportedScoreDetailScreen(
+                                title: title,
+                                pages: (s['imagePages'] as List?)?.cast<String>() ?? [],
+                              );
+                            }
+
+                            if (mode == 'score_pdf') {
+                              return ImportedScoreDetailScreen(
+                                title: title,
+                                pages: (s['pdfPages'] as List?)?.cast<String>() ?? [],
+                              );
+                            }
+
+                            return EditorScreen(
+                              songId: s['id'] as String?,
+                            );
+                          },
                         ),
                       ),
                       trailing: IconButton(
@@ -226,10 +350,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
                               false;
                           if (!ok) return;
 
-                          final trash = Hive.box('songs_trash');
-                          final id = s['id'];
-                          await trash.put(id, s);
-                          await songsBox.delete(id);
+                          await repo.trash(s['id']);
                           if (context.mounted) {
                             ScaffoldMessenger.of(context).showSnackBar(
                               const SnackBar(

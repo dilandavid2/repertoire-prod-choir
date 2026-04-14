@@ -7,6 +7,8 @@ import '../../data/repositories/song_repository.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:uuid/uuid.dart';
 
+import '../score/score_editor_screen.dart';
+
 const kKeys = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
 
 class EditorScreen extends StatefulWidget {
@@ -95,6 +97,18 @@ class _EditorScreenState extends State<EditorScreen> {
       appBar: AppBar(
         title: Text(id == null ? 'Nueva canción' : 'Editar canción'),
         actions: [
+          IconButton(
+            tooltip: 'Editor de partitura',
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => ScoreEditorScreen(songId: id),
+                ),
+              );
+            },
+            icon: const Icon(Icons.library_music),
+          ),
           IconButton(onPressed: _share, icon: const Icon(Icons.share)),
           IconButton(onPressed: _save, icon: const Icon(Icons.save)),
         ],
